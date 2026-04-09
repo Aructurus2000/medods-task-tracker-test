@@ -26,21 +26,21 @@ const (
 )
 
 type Recurrence struct {
-	Type         RecurrenceType `json:"type"`
-	EveryNDays   int            `json:"every_n_days,omitempty"`
-	DayOfMonth   int            `json:"day_of_month,omitempty"`
-	SpecificDates []time.Time   `json:"specific_dates,omitempty"`
-	Parity       DayParity      `json:"parity,omitempty"`
+	Type          RecurrenceType `json:"type"`
+	EveryNDays    int            `json:"every_n_days,omitempty"`
+	DayOfMonth    int            `json:"day_of_month,omitempty"`
+	SpecificDates []time.Time    `json:"specific_dates,omitempty"`
+	Parity        DayParity      `json:"parity,omitempty"`
 }
 
 type Task struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Status      Status    `json:"status"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Status      Status     `json:"status"`
 	Recurrence  Recurrence `json:"recurrence"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 func (s Status) Valid() bool {
