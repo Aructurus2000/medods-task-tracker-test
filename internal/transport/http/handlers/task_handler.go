@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -26,11 +27,17 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	recurrence, err := recurrenceDTOToDomain(req.Recurrence)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	created, err := h.usecase.Create(r.Context(), taskusecase.CreateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
+		Recurrence:  recurrence,
 	})
 	if err != nil {
 		writeUsecaseError(w, err)
@@ -68,11 +75,17 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	recurrence, err := recurrenceDTOToDomain(req.Recurrence)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	updated, err := h.usecase.Update(r.Context(), id, taskusecase.UpdateInput{
 		Title:       req.Title,
 		Description: req.Description,
 		Status:      req.Status,
+		Recurrence:  recurrence,
 	})
 	if err != nil {
 		writeUsecaseError(w, err)
@@ -98,7 +111,13 @@ func (h *TaskHandler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) List(w http.ResponseWriter, r *http.Request) {
-	tasks, err := h.usecase.List(r.Context())
+	onDate, err := parseDateQuery(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	tasks, err := h.usecase.List(r.Context(), onDate)
 	if err != nil {
 		writeUsecaseError(w, err)
 		return
@@ -132,13 +151,43 @@ func getIDFromRequest(r *http.Request) (int64, error) {
 
 func decodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-
 	if err := decoder.Decode(dst); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func parseDateQuery(r *http.Request) (*time.Time, error) {
+	raw := r.URL.Query().Get("date")
+	if raw == "" {
+		return nil, nil
+	}
+	d, err := time.Parse("2006-01-02", raw)
+	if err != nil {
+		return nil, errors.New("invalid date query parameter, expected YYYY-MM-DD")
+	}
+	normalized := d.UTC()
+	return &normalized, nil
+}
+
+func recurrenceDTOToDomain(dto recurrenceDTO) (taskdomain.Recurrence, error) {
+	dates := make([]time.Time, 0, len(dto.SpecificDates))
+	for _, raw := range dto.SpecificDates {
+		parsed, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			return taskdomain.Recurrence{}, errors.New("invalid specific_dates item, expected YYYY-MM-DD")
+		}
+		dates = append(dates, parsed.UTC())
+	}
+
+	return taskdomain.Recurrence{
+		Type:          dto.Type,
+		EveryNDays:    dto.EveryNDays,
+		DayOfMonth:    dto.DayOfMonth,
+		SpecificDates: dates,
+		Parity:        dto.Parity,
+	}, nil
 }
 
 func writeUsecaseError(w http.ResponseWriter, err error) {

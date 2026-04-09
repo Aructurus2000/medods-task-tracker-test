@@ -25,10 +25,7 @@ func main() {
 
 	cfg := loadConfig()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	pool, err := infrastructurepostgres.Open(ctx, cfg.DatabaseDSN)
+	pool, err := infrastructurepostgres.Open(context.Background(), cfg.DatabaseDSN)
 	if err != nil {
 		logger.Error("open postgres", "error", err)
 		os.Exit(1)
@@ -47,22 +44,22 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	logger.Info("http server started", "addr", cfg.HTTPAddr)
 	go func() {
-		<-ctx.Done()
-
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Error("shutdown http server", "error", err)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("listen and serve", "error", err)
+			os.Exit(1)
 		}
 	}()
 
-	logger.Info("http server started", "addr", cfg.HTTPAddr)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		logger.Error("listen and serve", "error", err)
-		os.Exit(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Error("shutdown http server", "error", err)
 	}
 }
 

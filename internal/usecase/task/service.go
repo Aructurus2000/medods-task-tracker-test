@@ -31,6 +31,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*taskdomain.Ta
 		Title:       normalized.Title,
 		Description: normalized.Description,
 		Status:      normalized.Status,
+		Recurrence:  normalized.Recurrence,
 	}
 	now := s.now()
 	model.CreatedAt = now
@@ -67,6 +68,7 @@ func (s *Service) Update(ctx context.Context, id int64, input UpdateInput) (*tas
 		Title:       normalized.Title,
 		Description: normalized.Description,
 		Status:      normalized.Status,
+		Recurrence:  normalized.Recurrence,
 		UpdatedAt:   s.now(),
 	}
 
@@ -86,8 +88,8 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	return s.repo.Delete(ctx, id)
 }
 
-func (s *Service) List(ctx context.Context) ([]taskdomain.Task, error) {
-	return s.repo.List(ctx)
+func (s *Service) List(ctx context.Context, onDate *time.Time) ([]taskdomain.Task, error) {
+	return s.repo.List(ctx, onDate)
 }
 
 func validateCreateInput(input CreateInput) (CreateInput, error) {
@@ -106,6 +108,12 @@ func validateCreateInput(input CreateInput) (CreateInput, error) {
 		return CreateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
 	}
 
+	normalizedRecurrence, err := validateRecurrence(input.Recurrence)
+	if err != nil {
+		return CreateInput{}, err
+	}
+	input.Recurrence = normalizedRecurrence
+
 	return input, nil
 }
 
@@ -121,5 +129,70 @@ func validateUpdateInput(input UpdateInput) (UpdateInput, error) {
 		return UpdateInput{}, fmt.Errorf("%w: invalid status", ErrInvalidInput)
 	}
 
+	normalizedRecurrence, err := validateRecurrence(input.Recurrence)
+	if err != nil {
+		return UpdateInput{}, err
+	}
+	input.Recurrence = normalizedRecurrence
+
 	return input, nil
+}
+
+func validateRecurrence(input taskdomain.Recurrence) (taskdomain.Recurrence, error) {
+	if input.Type == "" {
+		input.Type = taskdomain.RecurrenceNone
+	}
+	if !input.Type.Valid() {
+		return taskdomain.Recurrence{}, fmt.Errorf("%w: invalid recurrence type", ErrInvalidInput)
+	}
+
+	switch input.Type {
+	case taskdomain.RecurrenceNone:
+		return taskdomain.Recurrence{Type: taskdomain.RecurrenceNone}, nil
+	case taskdomain.RecurrenceEveryNDay:
+		if input.EveryNDays <= 0 {
+			return taskdomain.Recurrence{}, fmt.Errorf("%w: every_n_days must be positive", ErrInvalidInput)
+		}
+		return taskdomain.Recurrence{
+			Type:       input.Type,
+			EveryNDays: input.EveryNDays,
+		}, nil
+	case taskdomain.RecurrenceMonthly:
+		if input.DayOfMonth < 1 || input.DayOfMonth > 31 {
+			return taskdomain.Recurrence{}, fmt.Errorf("%w: day_of_month must be in range 1..31", ErrInvalidInput)
+		}
+		return taskdomain.Recurrence{
+			Type:       input.Type,
+			DayOfMonth: input.DayOfMonth,
+		}, nil
+	case taskdomain.RecurrenceDates:
+		if len(input.SpecificDates) == 0 {
+			return taskdomain.Recurrence{}, fmt.Errorf("%w: specific_dates must not be empty", ErrInvalidInput)
+		}
+		normalizedDates := make([]time.Time, 0, len(input.SpecificDates))
+		seen := make(map[string]struct{}, len(input.SpecificDates))
+		for _, d := range input.SpecificDates {
+			day := time.Date(d.UTC().Year(), d.UTC().Month(), d.UTC().Day(), 0, 0, 0, 0, time.UTC)
+			key := day.Format("2006-01-02")
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			normalizedDates = append(normalizedDates, day)
+		}
+		return taskdomain.Recurrence{
+			Type:          input.Type,
+			SpecificDates: normalizedDates,
+		}, nil
+	case taskdomain.RecurrenceParity:
+		if !input.Parity.Valid() {
+			return taskdomain.Recurrence{}, fmt.Errorf("%w: parity must be even or odd", ErrInvalidInput)
+		}
+		return taskdomain.Recurrence{
+			Type:   input.Type,
+			Parity: input.Parity,
+		}, nil
+	default:
+		return taskdomain.Recurrence{}, fmt.Errorf("%w: invalid recurrence type", ErrInvalidInput)
+	}
 }

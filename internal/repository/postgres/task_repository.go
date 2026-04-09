@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,18 +17,42 @@ type Repository struct {
 	pool *pgxpool.Pool
 }
 
+const taskColumns = `id, title, description, status, recurrence_type, recurrence_every_n_days,
+	recurrence_day_of_month, recurrence_specific_dates, recurrence_parity, created_at, updated_at`
+
 func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
 func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
-	const query = `
-		INSERT INTO tasks (title, description, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, title, description, status, created_at, updated_at
-	`
+	query := fmt.Sprintf(`
+		INSERT INTO tasks (
+			title, description, status, recurrence_type, recurrence_every_n_days,
+			recurrence_day_of_month, recurrence_specific_dates, recurrence_parity, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+		RETURNING %s
+	`, taskColumns)
 
-	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.CreatedAt, task.UpdatedAt)
+	recurrenceDates, err := marshalSpecificDates(task.Recurrence.SpecificDates)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.Recurrence.Type,
+		nullableInt(task.Recurrence.EveryNDays),
+		nullableInt(task.Recurrence.DayOfMonth),
+		recurrenceDates,
+		nullableString(string(task.Recurrence.Parity)),
+		task.CreatedAt,
+		task.UpdatedAt,
+	)
 	created, err := scanTask(row)
 	if err != nil {
 		return nil, err
@@ -35,11 +62,11 @@ func (r *Repository) Create(ctx context.Context, task *taskdomain.Task) (*taskdo
 }
 
 func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, error) {
-	const query = `
-		SELECT id, title, description, status, created_at, updated_at
+	query := fmt.Sprintf(`
+		SELECT %s
 		FROM tasks
 		WHERE id = $1
-	`
+	`, taskColumns)
 
 	row := r.pool.QueryRow(ctx, query, id)
 	found, err := scanTask(row)
@@ -55,17 +82,40 @@ func (r *Repository) GetByID(ctx context.Context, id int64) (*taskdomain.Task, e
 }
 
 func (r *Repository) Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error) {
-	const query = `
+	query := fmt.Sprintf(`
 		UPDATE tasks
 		SET title = $1,
 			description = $2,
 			status = $3,
-			updated_at = $4
-		WHERE id = $5
-		RETURNING id, title, description, status, created_at, updated_at
-	`
+			recurrence_type = $4,
+			recurrence_every_n_days = $5,
+			recurrence_day_of_month = $6,
+			recurrence_specific_dates = $7::jsonb,
+			recurrence_parity = $8,
+			updated_at = $9
+		WHERE id = $10
+		RETURNING %s
+	`, taskColumns)
 
-	row := r.pool.QueryRow(ctx, query, task.Title, task.Description, task.Status, task.UpdatedAt, task.ID)
+	recurrenceDates, err := marshalSpecificDates(task.Recurrence.SpecificDates)
+	if err != nil {
+		return nil, err
+	}
+
+	row := r.pool.QueryRow(
+		ctx,
+		query,
+		task.Title,
+		task.Description,
+		task.Status,
+		task.Recurrence.Type,
+		nullableInt(task.Recurrence.EveryNDays),
+		nullableInt(task.Recurrence.DayOfMonth),
+		recurrenceDates,
+		nullableString(string(task.Recurrence.Parity)),
+		task.UpdatedAt,
+		task.ID,
+	)
 	updated, err := scanTask(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -93,14 +143,14 @@ func (r *Repository) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *Repository) List(ctx context.Context) ([]taskdomain.Task, error) {
-	const query = `
-		SELECT id, title, description, status, created_at, updated_at
-		FROM tasks
-		ORDER BY id DESC
-	`
+func (r *Repository) List(ctx context.Context, onDate *time.Time) ([]taskdomain.Task, error) {
+	query := buildListQuery(onDate)
+	args := make([]any, 0)
+	if onDate != nil {
+		args = append(args, onDate.Format("2006-01-02"))
+	}
 
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -129,8 +179,13 @@ type taskScanner interface {
 
 func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 	var (
-		task   taskdomain.Task
-		status string
+		task                    taskdomain.Task
+		status                  string
+		recurrenceType          string
+		recurrenceEveryNDays    *int
+		recurrenceDayOfMonth    *int
+		recurrenceSpecificDates []byte
+		recurrenceParity        *string
 	)
 
 	if err := scanner.Scan(
@@ -138,6 +193,11 @@ func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 		&task.Title,
 		&task.Description,
 		&status,
+		&recurrenceType,
+		&recurrenceEveryNDays,
+		&recurrenceDayOfMonth,
+		&recurrenceSpecificDates,
+		&recurrenceParity,
 		&task.CreatedAt,
 		&task.UpdatedAt,
 	); err != nil {
@@ -145,6 +205,88 @@ func scanTask(scanner taskScanner) (*taskdomain.Task, error) {
 	}
 
 	task.Status = taskdomain.Status(status)
+	task.Recurrence.Type = taskdomain.RecurrenceType(recurrenceType)
+	if recurrenceEveryNDays != nil {
+		task.Recurrence.EveryNDays = *recurrenceEveryNDays
+	}
+	if recurrenceDayOfMonth != nil {
+		task.Recurrence.DayOfMonth = *recurrenceDayOfMonth
+	}
+	if recurrenceParity != nil {
+		task.Recurrence.Parity = taskdomain.DayParity(*recurrenceParity)
+	}
+	if len(recurrenceSpecificDates) > 0 {
+		var rawDates []string
+		if err := json.Unmarshal(recurrenceSpecificDates, &rawDates); err != nil {
+			return nil, fmt.Errorf("decode recurrence_specific_dates: %w", err)
+		}
+		task.Recurrence.SpecificDates = make([]time.Time, 0, len(rawDates))
+		for _, rawDate := range rawDates {
+			date, err := time.Parse("2006-01-02", rawDate)
+			if err != nil {
+				return nil, fmt.Errorf("decode recurrence_specific_dates date: %w", err)
+			}
+			task.Recurrence.SpecificDates = append(task.Recurrence.SpecificDates, date.UTC())
+		}
+	}
 
 	return &task, nil
+}
+
+func marshalSpecificDates(dates []time.Time) ([]byte, error) {
+	if len(dates) == 0 {
+		return []byte("[]"), nil
+	}
+	values := make([]string, 0, len(dates))
+	for _, d := range dates {
+		values = append(values, d.UTC().Format("2006-01-02"))
+	}
+	result, err := json.Marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("encode recurrence_specific_dates: %w", err)
+	}
+	return result, nil
+}
+
+func nullableInt(v int) any {
+	if v <= 0 {
+		return nil
+	}
+	return v
+}
+
+func nullableString(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func buildListQuery(onDate *time.Time) string {
+	query := fmt.Sprintf(`
+		SELECT %s
+		FROM tasks
+	`, taskColumns)
+	if onDate != nil {
+		query += `
+		WHERE (
+			recurrence_type = 'none'
+			OR (
+				recurrence_type = 'every_n_days'
+				AND $1::date >= created_at::date
+				AND ($1::date - created_at::date) % recurrence_every_n_days = 0
+			)
+			OR (recurrence_type = 'monthly' AND EXTRACT(day FROM $1::date) = recurrence_day_of_month)
+			OR (recurrence_type = 'specific_dates' AND recurrence_specific_dates @> to_jsonb(ARRAY[to_char($1::date, 'YYYY-MM-DD')]))
+			OR (recurrence_type = 'month_day_parity' AND (
+				(recurrence_parity = 'even' AND MOD(EXTRACT(day FROM $1::date)::int, 2) = 0)
+				OR (recurrence_parity = 'odd' AND MOD(EXTRACT(day FROM $1::date)::int, 2) = 1)
+			))
+		)
+	`
+	}
+	query += `
+		ORDER BY id DESC
+	`
+	return query
 }
