@@ -13,6 +13,8 @@ type Repository interface {
 	Update(ctx context.Context, task *taskdomain.Task) (*taskdomain.Task, error)
 	Delete(ctx context.Context, id int64) error
 	List(ctx context.Context, onDate *time.Time) ([]taskdomain.Task, error)
+	// ListOpenDueOnDate returns tasks that match recurrence for the given calendar day and are not done.
+	ListOpenDueOnDate(ctx context.Context, onDate time.Time) ([]taskdomain.Task, error)
 }
 
 type Usecase interface {

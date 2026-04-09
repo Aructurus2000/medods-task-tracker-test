@@ -173,6 +173,28 @@ func (r *Repository) List(ctx context.Context, onDate *time.Time) ([]taskdomain.
 	return tasks, nil
 }
 
+func (r *Repository) ListOpenDueOnDate(ctx context.Context, onDate time.Time) ([]taskdomain.Task, error) {
+	query := buildListOpenDueQuery(onDate)
+	rows, err := r.pool.Query(ctx, query, onDate.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := make([]taskdomain.Task, 0)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, *task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 type taskScanner interface {
 	Scan(dest ...any) error
 }
@@ -285,6 +307,34 @@ func buildListQuery(onDate *time.Time) string {
 		)
 	`
 	}
+	query += `
+		ORDER BY id DESC
+	`
+	return query
+}
+
+func buildListOpenDueQuery(onDate time.Time) string {
+	query := fmt.Sprintf(`
+		SELECT %s
+		FROM tasks
+	`, taskColumns)
+	query += `
+		WHERE (
+			recurrence_type = 'none'
+			OR (
+				recurrence_type = 'every_n_days'
+				AND $1::date >= created_at::date
+				AND ($1::date - created_at::date) % recurrence_every_n_days = 0
+			)
+			OR (recurrence_type = 'monthly' AND EXTRACT(day FROM $1::date) = recurrence_day_of_month)
+			OR (recurrence_type = 'specific_dates' AND recurrence_specific_dates @> to_jsonb(ARRAY[to_char($1::date, 'YYYY-MM-DD')]))
+			OR (recurrence_type = 'month_day_parity' AND (
+				(recurrence_parity = 'even' AND MOD(EXTRACT(day FROM $1::date)::int, 2) = 0)
+				OR (recurrence_parity = 'odd' AND MOD(EXTRACT(day FROM $1::date)::int, 2) = 1)
+			))
+		)
+		AND status != 'done'
+	`
 	query += `
 		ORDER BY id DESC
 	`

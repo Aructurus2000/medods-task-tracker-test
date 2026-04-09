@@ -14,6 +14,10 @@
     {
       "name": "Tasks",
       "description": "Operations with tasks"
+    },
+    {
+      "name": "Notifications",
+      "description": "Morning digest reminders"
     }
   ],
   "paths": {
@@ -138,6 +142,35 @@
         "responses": {
           "204": { "description": "Deleted" },
           "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/notifications": {
+      "get": {
+        "tags": ["Notifications"],
+        "summary": "List reminder notifications",
+        "parameters": [
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "description": "Calendar date (YYYY-MM-DD). Default: today (UTC).",
+            "schema": { "type": "string", "format": "date", "example": "2026-04-10" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Notification" }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       }
     }
@@ -270,6 +303,27 @@
         "type": "object",
         "properties": {
           "error": { "type": "string", "example": "task not found" }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64", "example": 1 },
+          "task_id": { "type": "integer", "format": "int64", "example": 2 },
+          "reminder_date": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-10T00:00:00Z"
+          },
+          "message": {
+            "type": "string",
+            "example": "Напоминание на 2026-04-10: Обзвон"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-10T08:00:01Z"
+          }
         }
       }
     }
